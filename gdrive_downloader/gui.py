@@ -250,6 +250,12 @@ class DownloadApp(tk.Tk):
             self._append_log(f"Download de {tipo} iniciado → {output_path}", "info")
             self.status_var.set(f"Baixando {tipo}...")
 
+        elif event_type == "status":
+            _, msg = item
+            self.status_var.set(msg)
+            tag = "warn" if msg.startswith("[SKIP]") else "info"
+            self._append_log(msg, tag)
+
         elif event_type == "progress":
             _, state = item
             speed_str = format_bytes(int(state.speed_bps)) + "/s" if state.speed_bps > 0 else "--"

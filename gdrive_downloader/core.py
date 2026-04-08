@@ -64,6 +64,8 @@ def download(
                     # Usa Google Drive API v3 — confiável para pastas públicas
                     def _status(msg):
                         logger.info(msg)
+                        if progress_reporter and hasattr(progress_reporter, "_queue"):
+                            progress_reporter._queue.put(("status", msg))
 
                     downloaded = api_download_folder(
                         folder_id=drive_id,

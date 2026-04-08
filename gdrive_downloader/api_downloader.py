@@ -6,6 +6,14 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
 import requests
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
@@ -144,8 +152,32 @@ def download_folder(
                 status_cb(f"Ignorando arquivo Google Workspace: {name}")
 
         else:
-            if status_cb:
-                status_cb(f"Baixando: {name}")
+            out_file = output_dir / name
+            api_size = int(item.get("size") or 0)
+
+            if out_file.exists():
+                existing_size = out_file.stat().st_size
+                if api_size > 0 and existing_size >= api_size:
+                    # Arquivo completo — pula sem baixar
+                    if status_cb:
+                        status_cb(f"[SKIP] {name} ({_human_size(existing_size)})")
+                    downloaded.append(str(out_file))
+                    continue
+                elif existing_size > 0 and resume:
+                    # Arquivo parcial e resume ativado — retoma
+                    if status_cb:
+                        status_cb(
+                            f"[RETOMANDO] {name} "
+                            f"({_human_size(existing_size)} de {_human_size(api_size)})"
+                        )
+                else:
+                    # Arquivo parcial sem resume, ou tamanho desconhecido — baixa do zero
+                    if status_cb:
+                        status_cb(f"[BAIXANDO] {name}")
+            else:
+                if status_cb:
+                    status_cb(f"[BAIXANDO] {name}")
+
             path = download_file(
                 file_id=item["id"],
                 dest_path=output_dir,
