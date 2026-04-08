@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
+import gdown
+import requests
+
 
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -13,8 +16,6 @@ def _human_size(n: int) -> str:
             return f"{n:.0f} {unit}"
         n /= 1024
     return f"{n:.1f} GB"
-
-import requests
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
@@ -27,8 +28,11 @@ class DriveAPIError(Exception):
 def _get(url: str, params: dict, timeout: int = 30) -> dict:
     resp = requests.get(url, params=params, timeout=timeout)
     if resp.status_code == 403:
-        data = resp.json()
-        msg = data.get("error", {}).get("message", "Acesso negado")
+        try:
+            data = resp.json()
+            msg = data.get("error", {}).get("message", "Acesso negado")
+        except Exception:
+            msg = "Acesso negado (resposta não-JSON)"
         raise DriveAPIError(f"API Key inválida ou sem permissão: {msg}")
     if resp.status_code == 400:
         data = resp.json()
@@ -48,6 +52,8 @@ def list_folder(folder_id: str, api_key: str) -> List[dict]:
             "fields": "nextPageToken, files(id, name, size, mimeType)",
             "key": api_key,
             "pageSize": 1000,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
         }
         if page_token:
             params["pageToken"] = page_token
@@ -70,7 +76,7 @@ def download_file(
     # Obtém metadata
     meta = _get(
         f"{DRIVE_API}/files/{file_id}",
-        {"fields": "name,size", "key": api_key},
+        {"fields": "name,size", "key": api_key, "supportsAllDrives": "true"},
     )
     name = meta.get("name", file_id)
     total = int(meta.get("size") or 0)
@@ -89,8 +95,20 @@ def download_file(
             return out_file  # já completo
         headers["Range"] = f"bytes={start}-"
 
-    download_url = f"{DRIVE_API}/files/{file_id}?alt=media&key={api_key}"
-    resp = requests.get(download_url, headers=headers, stream=True, timeout=60)
+    download_url = f"{DRIVE_API}/files/{file_id}"
+    params = {"alt": "media", "key": api_key, "supportsAllDrives": "true"}
+    resp = requests.get(download_url, params=params, headers=headers, stream=True, timeout=60)
+
+    # Alguns arquivos exigem acknowledgeAbuse=true (arquivos grandes ou sinalizados pelo Google)
+    if resp.status_code == 403:
+        params["acknowledgeAbuse"] = "true"
+        resp = requests.get(download_url, params=params, headers=headers, stream=True, timeout=60)
+        if resp.status_code == 403:
+            ct = resp.headers.get("content-type", "")
+            data = resp.json() if "application/json" in ct else {}
+            msg = data.get("error", {}).get("message", "Acesso negado")
+            raise DriveAPIError(f"Arquivo sem permissão de download (403): {msg}")
+
     if resp.status_code == 416:  # Range Not Satisfiable → arquivo já completo
         return out_file
     resp.raise_for_status()
@@ -178,13 +196,31 @@ def download_folder(
                 if status_cb:
                     status_cb(f"[BAIXANDO] {name}")
 
-            path = download_file(
-                file_id=item["id"],
-                dest_path=output_dir,
-                api_key=api_key,
-                resume=resume,
-                progress_cb=progress_cb,
-            )
+            try:
+                path = download_file(
+                    file_id=item["id"],
+                    dest_path=output_dir,
+                    api_key=api_key,
+                    resume=resume,
+                    progress_cb=progress_cb,
+                )
+            except (DriveAPIError, requests.HTTPError) as e:
+                # Fallback: tenta via gdown quando a API rejeita (ex: arquivo restrito)
+                if status_cb:
+                    status_cb(f"[AVISO] API negou acesso a {name}, tentando via gdown...")
+                gdown_url = f"https://drive.google.com/uc?id={item['id']}"
+                result = gdown.download(
+                    url=gdown_url,
+                    output=str(output_dir / name),
+                    quiet=True,
+                    fuzzy=False,
+                    resume=resume,
+                )
+                if not result:
+                    if status_cb:
+                        status_cb(f"[ERRO] Não foi possível baixar {name}: {e}")
+                    continue
+                path = Path(result)
             downloaded.append(str(path))
             time.sleep(0.1)  # Pequena pausa para não estourar quota
 

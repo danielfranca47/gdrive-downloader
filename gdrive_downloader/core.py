@@ -104,13 +104,27 @@ def download(
                 progress_reporter.start_watching(str(output_path), drive_id)
             try:
                 if api_key:
-                    file_path = api_download_file(
-                        file_id=drive_id,
-                        dest_path=output_path,
-                        api_key=api_key,
-                        resume=resume,
-                    )
-                    downloaded = str(file_path) if file_path else None
+                    try:
+                        file_path = api_download_file(
+                            file_id=drive_id,
+                            dest_path=output_path,
+                            api_key=api_key,
+                            resume=resume,
+                        )
+                        downloaded = str(file_path) if file_path else None
+                    except Exception as api_err:
+                        # Fallback: tenta via gdown quando a API rejeita
+                        logger.warning(f"API negou acesso ao arquivo, tentando via gdown: {api_err}")
+                        if progress_reporter and hasattr(progress_reporter, "_queue"):
+                            progress_reporter._queue.put(("status", "[AVISO] API negou acesso, tentando via gdown..."))
+                        output_file_hint = str(output_path) + "/"
+                        downloaded = gdown.download(
+                            url=url,
+                            output=output_file_hint,
+                            quiet=quiet,
+                            fuzzy=fuzzy,
+                            resume=resume,
+                        )
                 else:
                     output_file_hint = str(output_path) + "/"
                     downloaded = gdown.download(
